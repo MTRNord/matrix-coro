@@ -73,3 +73,12 @@ struct ClientRegistrationResponse {
     std::string client_id;
     int client_id_issued_at;
 };
+
+
+struct TokenResponse {
+    std::string access_token;
+    std::string refresh_token;
+    std::string token_type;
+    int expires_in;
+    std::string scope;
+};

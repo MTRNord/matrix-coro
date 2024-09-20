@@ -55,11 +55,11 @@ private:
      * This function sends a registration request to the given authentication endpoint using the provided registration data.
      * It allows the client to be registered as an OAuth2 client on the OIDC server side, enabling the client to let people log in.
      *
-     * \param auth_endpoint The URL of the authentication endpoint to register the client.
+     * \param registration_endpoint The URL of the registration endpoint to register the client which can be optained from the openid-configuration.
      * \param registration_data The data required for client registration.
      * \return A cppcoro::task that resolves to a ClientRegistrationResponse containing the registration result.
      */
-    [[nodiscard]] cppcoro::task<ClientRegistrationResponse> register_client(const std::string &auth_endpoint,
+    [[nodiscard]] cppcoro::task<ClientRegistrationResponse> register_client(const std::string &registration_endpoint,
                                                                             const ClientRegistrationData &
                                                                             registration_data) const;
 
@@ -83,4 +83,12 @@ private:
                "&scope=urn%3Amatrix%3Aorg.matrix.msc2967.client%3Aapi%3A*%20urn%3Amatrix%3Aorg.matrix.msc2967.client%3Adevice%3AABCDEFGHIJKL&state="
                + state + "&code_challenge_method=S256" + "&code_challenge=" + code_challenge;
     }
+
+    [[nodiscard]] cppcoro::task<TokenResponse> exchange_code_for_token(
+        const std::string &token_endpoint, const std::string &code,
+        const std::string &code_verifier,
+        const std::string &client_id, const std::string &redirect_url) const;
+
+    [[nodiscard]] cppcoro::task<OpenIDConfiguration> fetch_openid_configration(
+        const std::string &auth_endpoint) const;
 };
