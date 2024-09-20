@@ -29,6 +29,16 @@ if (NOT TARGET spdlog)
     find_package(spdlog REQUIRED)
 endif ()
 
+# include cthash using fetch content
+FetchContent_Declare(
+        cthash
+        GIT_REPOSITORY https://github.com/hanickadot/cthash.git
+        GIT_TAG 52ed741c82c518f7c038c50d5f39bf943067d9a8
+        GIT_SHALLOW ON
+        GIT_PROGRESS ON
+)
+
+FetchContent_MakeAvailable(cthash)
 
 target_link_libraries(
         matrix_coro
@@ -36,11 +46,11 @@ target_link_libraries(
         PkgConfig::JSONCPP
         CURL::libcurl
         cppcoro
+        cthash
 )
 
 target_include_directories(matrix_coro
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-        PUBLIC ${Asyncpp_SOURCE_DIR}/include
 )
 
 if (CMAKE_BUILD_TYPE MATCHES "Debug")
