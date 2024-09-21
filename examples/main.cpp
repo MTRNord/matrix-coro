@@ -4,7 +4,7 @@
 #include "cppcoro/sync_wait.hpp"
 
 int main() {
-    spdlog::set_level(spdlog::level::debug);
+    spdlog::set_level(spdlog::level::info);
     spdlog::set_pattern("[%H:%M:%S %z] [%^%L%$] [thread %t] %v");
 
     Client client;
@@ -12,7 +12,8 @@ int main() {
     const auto homeserver = "https://synapse-oidc.element.dev";
     auto redirect_url = "https://areweoidcyet.com/client-implementation-guide/callback";
     const auto state = "state";
-    const auto code_verifier = "code_verifier";
+    const auto code_verifier =
+            "ahlae7FuMahCeeseip6Shooqu6aefai5xoocea5gav2";
     ClientRegistrationData registration_data;
     registration_data.application_type = "web";
     registration_data.client_name = "Test";
@@ -34,7 +35,11 @@ int main() {
     spdlog::info("Please paste the code here: ");
     std::cin >> code;
 
-    auto logged_in_client = sync_wait(client.exchange_token(code, redirect_url));
+    const auto logged_in_client = sync_wait(client.exchange_token(code, redirect_url));
+
+    const auto whoami = sync_wait(logged_in_client.whoami());
+
+    spdlog::info("User ID: {}", whoami.user_id);
 
     return 0;
 }

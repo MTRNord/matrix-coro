@@ -5,27 +5,35 @@
 #include "cppcoro/task.hpp"
 #include <curl/curl.h>
 #include <cthash/sha2/sha256.hpp>
+#include <spdlog/spdlog.h>
 
 
 class BaseClient {
+protected:
+    CURL *curl = curl_easy_init();
+
+public:
+    ~BaseClient() {
+        curl_easy_cleanup(curl);
+    }
 };
 
 class LoggedInClient : public BaseClient {
     TokenResponse token_data;
+    WellKnownResponse well_known;
 
 public:
-    explicit LoggedInClient(TokenResponse token_data) : token_data(std::move(token_data)) {
+    LoggedInClient(TokenResponse token_data, WellKnownResponse well_known): token_data(std::move(token_data)),
+                                                                            well_known(std::move(well_known)) {
     }
+
+    [[nodiscard]] cppcoro::task<WhoamiResponse> whoami() const;
 };
 
 class Client : public BaseClient {
     friend class ClientTest; // Declare the test class as a friend
 
 public:
-    ~Client() {
-        curl_easy_cleanup(curl);
-    }
-
     [[nodiscard]] cppcoro::task<std::string> get_auth_url(std::string homeserver, std::string redirect_url,
                                                           std::string state, std::string code_verifier,
                                                           const ClientRegistrationData &registration_data);
@@ -34,7 +42,6 @@ public:
                                                                const std::string &redirect_url) const;
 
 private:
-    CURL *curl = curl_easy_init();
     WellKnownResponse well_known;
     AuthIssuerResponse auth_issuer;
     ClientRegistrationResponse client_registration;
@@ -84,11 +91,13 @@ private:
                                                                const std::string &redirect_url,
                                                                const std::string &state,
                                                                const std::string &code_verifier) const {
+        spdlog::debug("Code verifier: {}", code_verifier);
         // URL encode the redirect URL
         const auto url_encoded_redirect_url = url_encode(redirect_url);
 
         // Calculate the code challenge from the code_verifier by doing `BASE64URL(SHA256(code_verifier))`
-        const auto code_challenge = cthash::base64url_encode(cthash::simple<cthash::sha256>(code_verifier)).to_string();
+        const auto sha256_code_verifier = cthash::simple<cthash::sha256>(code_verifier);
+        const auto code_challenge = cthash::base64url_encode(sha256_code_verifier).to_string();
 
         return auth_endpoint + "?response_type=code&response_mode=fragment&client_id=" +
                auth_data.client_id + "&redirect_uri=" + url_encoded_redirect_url +

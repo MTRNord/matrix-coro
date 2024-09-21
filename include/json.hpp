@@ -9,16 +9,6 @@ struct WellKnownResponse {
     Json::Value raw;
 };
 
-struct LoginResponse {
-    std::string access_token;
-    std::string device_id;
-    std::optional<int> expires_in_ms;
-    std::string home_server;
-    std::optional<std::string> refresh_token;
-    std::string user_id;
-    WellKnownResponse well_known;
-};
-
 struct AuthIssuerResponse {
     std::string issuer;
 };
@@ -75,11 +65,16 @@ struct ClientRegistrationResponse {
     int client_id_issued_at;
 };
 
-
 struct TokenResponse {
     std::string access_token;
     std::string refresh_token;
     std::string token_type;
     int expires_in;
     std::string scope;
+};
+
+struct WhoamiResponse {
+    std::string user_id;
+    std::string device_id;
+    bool is_guest;
 };

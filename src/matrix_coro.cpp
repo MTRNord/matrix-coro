@@ -11,6 +11,63 @@ static size_t WriteCallback(void *contents, const size_t size, const size_t nmem
     return size * nmemb;
 }
 
+cppcoro::task<WhoamiResponse> LoggedInClient::whoami() const {
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("http client is not initialized");
+    }
+
+    if (token_data.access_token.empty()) {
+        throw std::runtime_error("access token is empty");
+    }
+
+    auto homeserver = well_known.homeserver;
+
+    // Add https as needed to the homeserver address
+    std::string homeserver_https = homeserver;
+    if (homeserver_https.find("https://") == std::string::npos) {
+        homeserver_https = "https://" + homeserver_https;
+    }
+    spdlog::info("Fetching whoami from homeserver: {}", homeserver);
+    auto endpoint = homeserver_https + "_matrix/client/v3/account/whoami";
+
+    // Remove double slashes and make them single
+    std::regex re("([^:])(//+)");
+    endpoint = std::regex_replace(endpoint, re, "$1/");
+    spdlog::debug("Whoami endpoint: {}", endpoint);
+
+    std::string str_buffer;
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+
+    /* enable all supported built-in compressions */
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    // Add Authorization header
+    auto access_token = token_data.access_token;
+    curl_easy_setopt(curl, CURLOPT_XOAUTH2_BEARER, access_token.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BEARER);
+
+    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+
+    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
+        throw std::runtime_error("failed to fetch whoami: " + std::string(curl_easy_strerror(res)));
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
+        throw std::runtime_error("failed to parse whoami");
+    }
+    WhoamiResponse response;
+    response.user_id = root["user_id"].asString();
+    response.device_id = root["device_id"].asString();
+    response.is_guest = root["is_guest"].asBool();
+
+    co_return response;
+}
+
 cppcoro::task<std::string> Client::get_auth_url(std::string homeserver, std::string redirect_url,
                                                 std::string state, std::string code_verifier,
                                                 const ClientRegistrationData &registration_data) {
@@ -19,18 +76,20 @@ cppcoro::task<std::string> Client::get_auth_url(std::string homeserver, std::str
     spdlog::debug("Fetched well-known from homeserver: {}", well_known.homeserver);
 
     // Get the auth issuer information
-    const auto auth_issuer = co_await fetch_auth_issuer(well_known.homeserver);
-    spdlog::debug("Fetched auth issuer from homeserver: {}", auth_issuer.issuer);
+    const auto [issuer] = co_await fetch_auth_issuer(well_known.homeserver);
+    spdlog::debug("Fetched auth issuer from homeserver: {}", issuer);
 
     // Get the openid configuration
-    const auto openid_configuration = co_await fetch_openid_configuration(auth_issuer.issuer);
+    const auto openid_configuration = co_await fetch_openid_configuration(issuer);
 
     // Register the client
     const auto client_registration = co_await register_client(openid_configuration.registration_endpoint,
                                                               registration_data);
 
-    spdlog::debug("Registered client with client_id: {}", client_registration.client_id);
-    spdlog::debug("Authorization endpoint: {}", openid_configuration.authorization_endpoint);
+    spdlog::info("Registered client with client_id: {}", client_registration.client_id);
+
+    this->code_verifier = code_verifier;
+
     // Build the auth URL
     co_return this->generate_authorize_url(openid_configuration.authorization_endpoint, client_registration,
                                            redirect_url, state,
@@ -41,8 +100,15 @@ cppcoro::task<LoggedInClient> Client::exchange_token(const std::string &code, co
     const auto token_resp = co_await exchange_code_for_token(this->openid_configuration.token_endpoint, code,
                                                              this->code_verifier,
                                                              this->client_registration.client_id, redirect_url);
+
+    if (token_resp.access_token.empty()) {
+        throw std::runtime_error("access token is empty after exchange");
+    }
+
     spdlog::info("Successfully exchanged code for token");
-    co_return LoggedInClient(token_resp);
+
+    const auto logged_in_client = LoggedInClient(token_resp, this->well_known);
+    co_return logged_in_client;
 }
 
 cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver) {
@@ -56,11 +122,14 @@ cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver)
     if (homeserver_https.find("https://") == std::string::npos) {
         homeserver_https = "https://" + homeserver_https;
     }
-    auto well_known_url = homeserver_https + "/.well-known/matrix/client";
+    auto endpoint = homeserver_https + "/.well-known/matrix/client";
+
+    // Remove double slashes and make them single
+    std::regex re("([^:])(//+)");
+    endpoint = std::regex_replace(endpoint, re, "$1/");
 
     std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, well_known_url.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
 
@@ -254,6 +323,11 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_e
     Json::Reader reader;
     if (const bool parse_status = reader.parse(str_buffer, resp_root); !parse_status) {
         throw std::runtime_error("failed to parse exchange token information");
+    }
+    spdlog::debug("Token response: {}", str_buffer);
+    if (resp_root.isMember("error")) {
+        throw std::runtime_error("error: " + resp_root["error"].asString() + ", error_description: " +
+                                 resp_root["error_description"].asString());
     }
 
     TokenResponse response;
