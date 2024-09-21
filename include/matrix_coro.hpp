@@ -3,24 +3,20 @@
 #include "utils.hpp"
 
 #include "cppcoro/task.hpp"
-#include <curl/curl.h>
 #include <cthash/sha2/sha256.hpp>
 #include <spdlog/spdlog.h>
 
 
 class BaseClient {
-protected:
-    CURL *curl = curl_easy_init();
-
 public:
-    ~BaseClient() {
-        curl_easy_cleanup(curl);
-    }
+    std::string user_agent = "MatrixCoro SDK/0.1.0";
 };
 
 class LoggedInClient : public BaseClient {
     TokenResponse token_data;
     WellKnownResponse well_known;
+
+    [[nodiscard]] cppcoro::task<Json::Value> get(const std::string &url) const;
 
 public:
     LoggedInClient(TokenResponse token_data, WellKnownResponse well_known): token_data(std::move(token_data)),
@@ -48,6 +44,11 @@ private:
     OpenIDConfiguration openid_configuration;
     std::string state;
     std::string code_verifier;
+
+    [[nodiscard]] cppcoro::task<Json::Value> get(const std::string &url) const;
+
+    [[nodiscard]] cppcoro::task<Json::Value> post(const std::string &url, const std::string &data,
+                                                  bool form_data = false) const;
 
     /**
      * \brief Fetches the well-known configuration from the specified homeserver.

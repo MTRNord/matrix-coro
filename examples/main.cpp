@@ -4,7 +4,7 @@
 #include "cppcoro/sync_wait.hpp"
 
 int main() {
-    spdlog::set_level(spdlog::level::info);
+    spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%H:%M:%S %z] [%^%L%$] [thread %t] %v");
 
     Client client;

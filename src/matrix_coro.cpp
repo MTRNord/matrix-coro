@@ -3,7 +3,6 @@
 #include <regex>
 
 #include "spdlog/spdlog.h"
-
 #include <json/json.h>
 
 static size_t WriteCallback(void *contents, const size_t size, const size_t nmemb, void *userp) {
@@ -11,8 +10,8 @@ static size_t WriteCallback(void *contents, const size_t size, const size_t nmem
     return size * nmemb;
 }
 
-cppcoro::task<WhoamiResponse> LoggedInClient::whoami() const {
-    CURL *curl = curl_easy_init();
+cppcoro::task<Json::Value> LoggedInClient::get(const std::string &url) const {
+    const auto curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
@@ -21,6 +20,41 @@ cppcoro::task<WhoamiResponse> LoggedInClient::whoami() const {
         throw std::runtime_error("access token is empty");
     }
 
+    spdlog::debug("Fetching url: {}", url);
+
+    std::string str_buffer;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+
+    // Set User-Agent
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent.c_str());
+
+    /* enable all supported built-in compressions */
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    // Add Authorization header
+    const auto access_token = token_data.access_token;
+    curl_easy_setopt(curl, CURLOPT_XOAUTH2_BEARER, access_token.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BEARER);
+
+    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+
+    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
+        throw std::runtime_error("failed to fetch \"" + url + "\": " + std::string(curl_easy_strerror(res)));
+    }
+
+    Json::Value root;
+    Json::Reader reader;
+    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
+        throw std::runtime_error("failed to parse json");
+    }
+
+    curl_easy_cleanup(curl);
+    co_return root;
+}
+
+cppcoro::task<WhoamiResponse> LoggedInClient::whoami() const {
     auto homeserver = well_known.homeserver;
 
     // Add https as needed to the homeserver address
@@ -36,34 +70,11 @@ cppcoro::task<WhoamiResponse> LoggedInClient::whoami() const {
     endpoint = std::regex_replace(endpoint, re, "$1/");
     spdlog::debug("Whoami endpoint: {}", endpoint);
 
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
-
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    // Add Authorization header
-    auto access_token = token_data.access_token;
-    curl_easy_setopt(curl, CURLOPT_XOAUTH2_BEARER, access_token.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BEARER);
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to fetch whoami: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value root;
-    Json::Reader reader;
-    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
-        throw std::runtime_error("failed to parse whoami");
-    }
+    const auto json = co_await get(endpoint);
     WhoamiResponse response;
-    response.user_id = root["user_id"].asString();
-    response.device_id = root["device_id"].asString();
-    response.is_guest = root["is_guest"].asBool();
+    response.user_id = json["user_id"].asString();
+    response.device_id = json["device_id"].asString();
+    response.is_guest = json["is_guest"].asBool();
 
     co_return response;
 }
@@ -111,10 +122,100 @@ cppcoro::task<LoggedInClient> Client::exchange_token(const std::string &code, co
     co_return logged_in_client;
 }
 
-cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver) {
+cppcoro::task<Json::Value> Client::get(const std::string &url) const {
+    const auto curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
+
+    spdlog::debug("Fetching url: {}", url);
+
+    std::string str_buffer;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+
+    // Set User-Agent
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent.c_str());
+
+    /* enable all supported built-in compressions */
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+
+    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
+        throw std::runtime_error("failed to fetch \"" + url + "\": " + std::string(curl_easy_strerror(res)));
+    }
+
+    Json::Value json;
+    Json::Reader reader;
+    if (const bool parse_status = reader.parse(str_buffer, json); !parse_status) {
+        throw std::runtime_error("failed to parse json");
+    }
+
+    if (json.isMember("error")) {
+        throw std::runtime_error("error: " + json["error"].asString() + ", error_description: " +
+                                 json["error_description"].asString());
+    }
+
+    curl_easy_cleanup(curl);
+    co_return json;
+}
+
+cppcoro::task<Json::Value> Client::post(const std::string &url, const std::string &data, const bool form_data) const {
+    const auto curl = curl_easy_init();
+    if (!curl) {
+        throw std::runtime_error("http client is not initialized");
+    }
+
+    spdlog::debug("Fetching url: {}", url);
+
+    std::string str_buffer;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+
+    // Set User-Agent
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent.c_str());
+
+    // Add data to body and set to POST request type
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+
+    // Set the Content-Type header
+    curl_slist *headers = nullptr;
+    if (form_data) {
+        headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+    } else {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+    }
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    /* enable all supported built-in compressions */
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+
+    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
+        throw std::runtime_error("failed to fetch \"" + url + "\": " + std::string(curl_easy_strerror(res)));
+    }
+
+    Json::Value json;
+    Json::Reader reader;
+    if (const bool parse_status = reader.parse(str_buffer, json); !parse_status) {
+        throw std::runtime_error("failed to parse json");
+    }
+
+    if (json.isMember("error")) {
+        throw std::runtime_error("error: " + json["error"].asString() + ", error_description: " +
+                                 json["error_description"].asString());
+    }
+
+    curl_easy_cleanup(curl);
+    co_return json;
+}
+
+cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver) {
     spdlog::info("Fetching well-known from homeserver: {}", homeserver);
 
     // Add https as needed to the homeserver address
@@ -125,40 +226,19 @@ cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver)
     auto endpoint = homeserver_https + "/.well-known/matrix/client";
 
     // Remove double slashes and make them single
-    std::regex re("([^:])(//+)");
+    const std::regex re("([^:])(//+)");
     endpoint = std::regex_replace(endpoint, re, "$1/");
 
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+    const auto json = co_await get(endpoint);
 
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to find well_known: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value root;
-    Json::Reader reader;
-    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
-        throw std::runtime_error("failed to parse well_known");
-    }
     WellKnownResponse response;
-    response.homeserver = root["m.homeserver"]["base_url"].asString();
-    response.identity_server = root["m.identity_server"]["base_url"].asString();
+    response.homeserver = json["m.homeserver"]["base_url"].asString();
+    response.identity_server = json["m.identity_server"]["base_url"].asString();
     this->well_known = response;
     co_return response;
 }
 
 cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpoint) {
-    if (!curl) {
-        throw std::runtime_error("http client is not initialized");
-    }
-
     if (cs_endpoint.find("https://") == std::string::npos || cs_endpoint.find("_matrix/client") != std::string::npos) {
         throw std::runtime_error("invalid cs_endpoint");
     }
@@ -166,57 +246,22 @@ cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpo
     auto endpoint = cs_endpoint + "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer";
 
     // Remove double slashes and make them single
-    std::regex re("([^:])(//+)");
+    const std::regex re("([^:])(//+)");
     endpoint = std::regex_replace(endpoint, re, "$1/");
 
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
+    const auto json = co_await get(endpoint);
 
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to find auth_issuer information: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value root;
-    Json::Reader reader;
-    spdlog::debug("Auth issuer response: {}", str_buffer);
-    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
-        throw std::runtime_error("failed to parse auth_issuer information");
-    }
     AuthIssuerResponse response;
-    response.issuer = root["issuer"].asString();
+    response.issuer = json["issuer"].asString();
     this->auth_issuer = response;
     co_return response;
 }
 
 cppcoro::task<ClientRegistrationResponse> Client::register_client(std::string registration_endpoint,
                                                                   const ClientRegistrationData &registration_data) {
-    if (!curl) {
-        throw std::runtime_error("http client is not initialized");
-    }
-
     if (registration_endpoint.find("https://") == std::string::npos) {
         throw std::runtime_error("invalid registration endpoint");
     }
-
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, registration_endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
-
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    // Make it a POST request
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
 
     // Convert the registration data to a JSON string
     Json::Value root;
@@ -240,33 +285,11 @@ cppcoro::task<ClientRegistrationResponse> Client::register_client(std::string re
     // Convert the JSON to a string
     Json::StreamWriterBuilder writer;
     const std::string json_str = Json::writeString(writer, root);
-    spdlog::debug("Registration request: {}", json_str);
 
-    // Set the POST data
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str.c_str());
-
-    // Set the Content-Type header
-    curl_slist *headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error(
-            "failed to find registration information: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value resp_root;
-    Json::Reader reader;
-    spdlog::debug("Registration response: {}", str_buffer);
-    if (const bool parse_status = reader.parse(str_buffer, resp_root); !parse_status) {
-        throw std::runtime_error("failed to parse registration information");
-    }
+    const auto json = co_await post(registration_endpoint, json_str);
     ClientRegistrationResponse response;
-    response.client_id = resp_root["client_id"].asString();
-    response.client_id_issued_at = resp_root["client_id_issued_at"].asInt();
+    response.client_id = json["client_id"].asString();
+    response.client_id_issued_at = json["client_id_issued_at"].asInt();
     this->client_registration = response;
     co_return response;
 }
@@ -276,24 +299,9 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_e
                                                              const std::string &code_verifier,
                                                              const std::string &client_id,
                                                              const std::string &redirect_url) const {
-    if (!curl) {
-        throw std::runtime_error("http client is not initialized");
-    }
     if (token_endpoint.find("https://") == std::string::npos) {
         throw std::runtime_error("invalid token_endpoint");
     }
-
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, token_endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
-
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    // Make it a POST request
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
 
     // Url encode the redirect URL
     const auto url_encoded_redirect_url = url_encode(redirect_url);
@@ -303,47 +311,24 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_e
                                     url_encoded_redirect_url +
                                     "&client_id=" + client_id + "&code_verifier=" + code_verifier;
 
-    // Set the POST data
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_fields.c_str());
+    const auto json = co_await post(token_endpoint, post_fields, true);
 
-    // Set the Content-Type header
-    curl_slist *headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error(
-            "failed to find exchange token information: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value resp_root;
-    Json::Reader reader;
-    if (const bool parse_status = reader.parse(str_buffer, resp_root); !parse_status) {
-        throw std::runtime_error("failed to parse exchange token information");
-    }
-    spdlog::debug("Token response: {}", str_buffer);
-    if (resp_root.isMember("error")) {
-        throw std::runtime_error("error: " + resp_root["error"].asString() + ", error_description: " +
-                                 resp_root["error_description"].asString());
+    if (json.isMember("error")) {
+        throw std::runtime_error("error: " + json["error"].asString() + ", error_description: " +
+                                 json["error_description"].asString());
     }
 
     TokenResponse response;
-    response.access_token = resp_root["access_token"].asString();
-    response.expires_in = resp_root["expires_in"].asInt();
-    response.refresh_token = resp_root["refresh_token"].asString();
-    response.token_type = resp_root["token_type"].asString();
-    response.scope = resp_root["scope"].asString();
+    response.access_token = json["access_token"].asString();
+    response.expires_in = json["expires_in"].asInt();
+    response.refresh_token = json["refresh_token"].asString();
+    response.token_type = json["token_type"].asString();
+    response.scope = json["scope"].asString();
 
     co_return response;
 }
 
 cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::string auth_endpoint) {
-    if (!curl) {
-        throw std::runtime_error("http client is not initialized");
-    }
     spdlog::info("Fetching openid configuration from auth_endpoint: {}", auth_endpoint);
 
     if (auth_endpoint.find("https://") == std::string::npos || auth_endpoint.find("_matrix/client") !=
@@ -357,106 +342,86 @@ cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::strin
     std::regex re("([^:])(//+)");
     endpoint = std::regex_replace(endpoint, re, "$1/");
 
-    std::string str_buffer;
-    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &str_buffer);
-
-    /* enable all supported built-in compressions */
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-
-    //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-
-    if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error(
-            "failed to find openid configuration information: " + std::string(curl_easy_strerror(res)));
-    }
-
-    Json::Value root;
-    Json::Reader reader;
-    if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
-        throw std::runtime_error("failed to parse openid configuration information");
-    }
+    const auto json = co_await get(endpoint);
 
     OpenIDConfiguration response;
-    response.issuer = root["issuer"].asString();
-    response.authorization_endpoint = root["authorization_endpoint"].asString();
-    response.token_endpoint = root["token_endpoint"].asString();
-    response.jwks_uri = root["jwks_uri"].asString();
-    response.registration_endpoint = root["registration_endpoint"].asString();
+    response.issuer = json["issuer"].asString();
+    response.authorization_endpoint = json["authorization_endpoint"].asString();
+    response.token_endpoint = json["token_endpoint"].asString();
+    response.jwks_uri = json["jwks_uri"].asString();
+    response.registration_endpoint = json["registration_endpoint"].asString();
 
-    for (const auto &scope: root["scopes_supported"]) {
+    for (const auto &scope: json["scopes_supported"]) {
         response.scopes_supported.push_back(scope.asString());
     }
-    for (const auto &response_type: root["response_types_supported"]) {
+    for (const auto &response_type: json["response_types_supported"]) {
         response.response_types_supported.push_back(response_type.asString());
     }
-    for (const auto &response_mode: root["response_modes_supported"]) {
+    for (const auto &response_mode: json["response_modes_supported"]) {
         response.response_modes_supported.push_back(response_mode.asString());
     }
-    for (const auto &grant_type: root["grant_types_supported"]) {
+    for (const auto &grant_type: json["grant_types_supported"]) {
         response.grant_types_supported.push_back(grant_type.asString());
     }
-    for (const auto &token_endpoint_auth_method: root["token_endpoint_auth_methods_supported"]) {
+    for (const auto &token_endpoint_auth_method: json["token_endpoint_auth_methods_supported"]) {
         response.token_endpoint_auth_methods_supported.push_back(token_endpoint_auth_method.asString());
     }
-    for (const auto &token_endpoint_auth_signing_alg: root["token_endpoint_auth_signing_alg_values_supported"]) {
+    for (const auto &token_endpoint_auth_signing_alg: json["token_endpoint_auth_signing_alg_values_supported"]) {
         response.token_endpoint_auth_signing_alg_values_supported.push_back(
             token_endpoint_auth_signing_alg.asString());
     }
-    response.revocation_endpoint = root["revocation_endpoint"].asString();
-    for (const auto &revocation_endpoint_auth_method: root["revocation_endpoint_auth_methods_supported"]) {
+    response.revocation_endpoint = json["revocation_endpoint"].asString();
+    for (const auto &revocation_endpoint_auth_method: json["revocation_endpoint_auth_methods_supported"]) {
         response.revocation_endpoint_auth_methods_supported.push_back(revocation_endpoint_auth_method.asString());
     }
-    for (const auto &revocation_endpoint_auth_signing_alg: root[
+    for (const auto &revocation_endpoint_auth_signing_alg: json[
              "revocation_endpoint_auth_signing_alg_values_supported"]) {
         response.revocation_endpoint_auth_signing_alg_values_supported.push_back(
             revocation_endpoint_auth_signing_alg.asString());
     }
-    response.introspection_endpoint = root["introspection_endpoint"].asString();
-    for (const auto &introspection_endpoint_auth_method: root["introspection_endpoint_auth_methods_supported"]) {
+    response.introspection_endpoint = json["introspection_endpoint"].asString();
+    for (const auto &introspection_endpoint_auth_method: json["introspection_endpoint_auth_methods_supported"]) {
         response.introspection_endpoint_auth_methods_supported.push_back(
             introspection_endpoint_auth_method.asString());
     }
-    for (const auto &introspection_endpoint_auth_signing_alg: root[
+    for (const auto &introspection_endpoint_auth_signing_alg: json[
              "introspection_endpoint_auth_signing_alg_values_supported"]) {
         response.introspection_endpoint_auth_signing_alg_values_supported.push_back(
             introspection_endpoint_auth_signing_alg.asString());
     }
-    for (const auto &code_challenge_method: root["code_challenge_methods_supported"]) {
+    for (const auto &code_challenge_method: json["code_challenge_methods_supported"]) {
         response.code_challenge_methods_supported.push_back(code_challenge_method.asString());
     }
-    response.userinfo_endpoint = root["userinfo_endpoint"].asString();
-    for (const auto &subject_type: root["subject_types_supported"]) {
+    response.userinfo_endpoint = json["userinfo_endpoint"].asString();
+    for (const auto &subject_type: json["subject_types_supported"]) {
         response.subject_types_supported.push_back(subject_type.asString());
     }
-    for (const auto &id_token_signing_alg: root["id_token_signing_alg_values_supported"]) {
+    for (const auto &id_token_signing_alg: json["id_token_signing_alg_values_supported"]) {
         response.id_token_signing_alg_values_supported.push_back(id_token_signing_alg.asString());
     }
-    for (const auto &userinfo_signing_alg: root["userinfo_signing_alg_values_supported"]) {
+    for (const auto &userinfo_signing_alg: json["userinfo_signing_alg_values_supported"]) {
         response.userinfo_signing_alg_values_supported.push_back(userinfo_signing_alg.asString());
     }
-    for (const auto &display_value: root["display_values_supported"]) {
+    for (const auto &display_value: json["display_values_supported"]) {
         response.display_values_supported.push_back(display_value.asString());
     }
-    for (const auto &claim_type: root["claim_types_supported"]) {
+    for (const auto &claim_type: json["claim_types_supported"]) {
         response.claim_types_supported.push_back(claim_type.asString());
     }
-    for (const auto &claim: root["claims_supported"]) {
+    for (const auto &claim: json["claims_supported"]) {
         response.claims_supported.push_back(claim.asString());
     }
-    response.claims_parameter_supported = root["claims_parameter_supported"].asBool();
-    response.request_parameter_supported = root["request_parameter_supported"].asBool();
-    response.request_uri_parameter_supported = root["request_uri_parameter_supported"].asBool();
-    for (const auto &prompt_value: root["prompt_values_supported"]) {
+    response.claims_parameter_supported = json["claims_parameter_supported"].asBool();
+    response.request_parameter_supported = json["request_parameter_supported"].asBool();
+    response.request_uri_parameter_supported = json["request_uri_parameter_supported"].asBool();
+    for (const auto &prompt_value: json["prompt_values_supported"]) {
         response.prompt_values_supported.push_back(prompt_value.asString());
     }
-    response.device_authorization_endpoint = root["device_authorization_endpoint"].asString();
-    response.org_matrix_matrix_authentication_service_graphql_endpoint = root[
+    response.device_authorization_endpoint = json["device_authorization_endpoint"].asString();
+    response.org_matrix_matrix_authentication_service_graphql_endpoint = json[
         "org.matrix.matrix_authentication_service_graphql_endpoint"].asString();
-    response.account_management_uri = root["account_management_uri"].asString();
-    for (const auto &account_management_action: root["account_management_actions_supported"]) {
+    response.account_management_uri = json["account_management_uri"].asString();
+    for (const auto &account_management_action: json["account_management_actions_supported"]) {
         response.account_management_actions_supported.push_back(account_management_action.asString());
     }
 
