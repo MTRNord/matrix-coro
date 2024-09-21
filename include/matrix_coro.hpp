@@ -11,10 +11,10 @@ class BaseClient {
 };
 
 class LoggedInClient : public BaseClient {
-    LoginResponse login_data;
+    TokenResponse token_data;
 
 public:
-    explicit LoggedInClient(LoginResponse login_data) : login_data(std::move(login_data)) {
+    explicit LoggedInClient(TokenResponse token_data) : token_data(std::move(token_data)) {
     }
 };
 
@@ -26,8 +26,21 @@ public:
         curl_easy_cleanup(curl);
     }
 
+    [[nodiscard]] cppcoro::task<std::string> get_auth_url(std::string homeserver, std::string redirect_url,
+                                                          std::string state, std::string code_verifier,
+                                                          const ClientRegistrationData &registration_data);
+
+    [[nodiscard]] cppcoro::task<LoggedInClient> exchange_token(const std::string &code,
+                                                               const std::string &redirect_url) const;
+
 private:
     CURL *curl = curl_easy_init();
+    WellKnownResponse well_known;
+    AuthIssuerResponse auth_issuer;
+    ClientRegistrationResponse client_registration;
+    OpenIDConfiguration openid_configuration;
+    std::string state;
+    std::string code_verifier;
 
     /**
      * \brief Fetches the well-known configuration from the specified homeserver.
@@ -37,7 +50,7 @@ private:
      * \param homeserver The URL of the homeserver from which to fetch the well-known configuration.
      * \return A cppcoro::task that resolves to a WellKnownResponse containing the well-known configuration.
      */
-    [[nodiscard]] cppcoro::task<WellKnownResponse> fetch_wellknown(const std::string &homeserver) const;
+    [[nodiscard]] cppcoro::task<WellKnownResponse> fetch_wellknown(std::string homeserver);
 
     /**
      * \brief Fetches the authentication issuer information from the specified client-server endpoint.
@@ -47,7 +60,7 @@ private:
      * \param cs_endpoint The URL of the client-server endpoint from which to fetch the authentication issuer information.
      * \return A cppcoro::task that resolves to an AuthIssuerResponse containing the authentication issuer information.
      */
-    [[nodiscard]] cppcoro::task<AuthIssuerResponse> fetch_auth_issuer(std::string cs_endpoint) const;
+    [[nodiscard]] cppcoro::task<AuthIssuerResponse> fetch_auth_issuer(std::string cs_endpoint);
 
     /**
      * \brief Registers a client with the specified authentication endpoint (MSC2966).
@@ -61,7 +74,7 @@ private:
      */
     [[nodiscard]] cppcoro::task<ClientRegistrationResponse> register_client(std::string registration_endpoint,
                                                                             const ClientRegistrationData &
-                                                                            registration_data) const;
+                                                                            registration_data);
 
 
     // ReSharper disable once CppMemberFunctionMayBeStatic
@@ -77,8 +90,7 @@ private:
         // Calculate the code challenge from the code_verifier by doing `BASE64URL(SHA256(code_verifier))`
         const auto code_challenge = cthash::base64url_encode(cthash::simple<cthash::sha256>(code_verifier)).to_string();
 
-
-        return auth_endpoint + "/authorize?response_type=code&response_mode=fragment&client_id=" +
+        return auth_endpoint + "?response_type=code&response_mode=fragment&client_id=" +
                auth_data.client_id + "&redirect_uri=" + url_encoded_redirect_url +
                "&scope=urn%3Amatrix%3Aorg.matrix.msc2967.client%3Aapi%3A*%20urn%3Amatrix%3Aorg.matrix.msc2967.client%3Adevice%3AABCDEFGHIJKL&state="
                + state + "&code_challenge_method=S256" + "&code_challenge=" + code_challenge;
@@ -92,5 +104,5 @@ private:
         const std::string &redirect_url) const;
 
     [[nodiscard]] cppcoro::task<OpenIDConfiguration> fetch_openid_configuration(
-        std::string auth_endpoint) const;
+        std::string auth_endpoint);
 };

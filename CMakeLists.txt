@@ -65,4 +65,7 @@ if (CMAKE_BUILD_TYPE MATCHES "Debug")
     #)
 endif ()
 
+# Examples
+add_subdirectory(examples)
+
 add_subdirectory(tests)

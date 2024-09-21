@@ -1,4 +1,7 @@
 #include "matrix_coro.hpp"
+
+#include <regex>
+
 #include "spdlog/spdlog.h"
 
 #include <json/json.h>
@@ -8,10 +11,45 @@ static size_t WriteCallback(void *contents, const size_t size, const size_t nmem
     return size * nmemb;
 }
 
-cppcoro::task<WellKnownResponse> Client::fetch_wellknown(const std::string &homeserver) const {
+cppcoro::task<std::string> Client::get_auth_url(std::string homeserver, std::string redirect_url,
+                                                std::string state, std::string code_verifier,
+                                                const ClientRegistrationData &registration_data) {
+    // Get the well-known configuration
+    const auto well_known = co_await fetch_wellknown(homeserver);
+    spdlog::debug("Fetched well-known from homeserver: {}", well_known.homeserver);
+
+    // Get the auth issuer information
+    const auto auth_issuer = co_await fetch_auth_issuer(well_known.homeserver);
+    spdlog::debug("Fetched auth issuer from homeserver: {}", auth_issuer.issuer);
+
+    // Get the openid configuration
+    const auto openid_configuration = co_await fetch_openid_configuration(auth_issuer.issuer);
+
+    // Register the client
+    const auto client_registration = co_await register_client(openid_configuration.registration_endpoint,
+                                                              registration_data);
+
+    spdlog::debug("Registered client with client_id: {}", client_registration.client_id);
+    spdlog::debug("Authorization endpoint: {}", openid_configuration.authorization_endpoint);
+    // Build the auth URL
+    co_return this->generate_authorize_url(openid_configuration.authorization_endpoint, client_registration,
+                                           redirect_url, state,
+                                           code_verifier);
+}
+
+cppcoro::task<LoggedInClient> Client::exchange_token(const std::string &code, const std::string &redirect_url) const {
+    const auto token_resp = co_await exchange_code_for_token(this->openid_configuration.token_endpoint, code,
+                                                             this->code_verifier,
+                                                             this->client_registration.client_id, redirect_url);
+    spdlog::info("Successfully exchanged code for token");
+    co_return LoggedInClient(token_resp);
+}
+
+cppcoro::task<WellKnownResponse> Client::fetch_wellknown(std::string homeserver) {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
+    spdlog::info("Fetching well-known from homeserver: {}", homeserver);
 
     // Add https as needed to the homeserver address
     std::string homeserver_https = homeserver;
@@ -43,21 +81,24 @@ cppcoro::task<WellKnownResponse> Client::fetch_wellknown(const std::string &home
     WellKnownResponse response;
     response.homeserver = root["m.homeserver"]["base_url"].asString();
     response.identity_server = root["m.identity_server"]["base_url"].asString();
+    this->well_known = response;
     co_return response;
 }
 
-cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpoint) const {
+cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpoint) {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
 
-    // Throw if the cs_endpoint doesnt start with https:// or if it contains a trailing slash or if it is empty or it contains _matrix/client
-    if (cs_endpoint.find("https://") == std::string::npos || cs_endpoint.find("_matrix/client") != std::string::npos ||
-        cs_endpoint.back() == '/') {
+    if (cs_endpoint.find("https://") == std::string::npos || cs_endpoint.find("_matrix/client") != std::string::npos) {
         throw std::runtime_error("invalid cs_endpoint");
     }
 
-    const auto endpoint = cs_endpoint + "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer";
+    auto endpoint = cs_endpoint + "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer";
+
+    // Remove double slashes and make them single
+    std::regex re("([^:])(//+)");
+    endpoint = std::regex_replace(endpoint, re, "$1/");
 
     std::string str_buffer;
     curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
@@ -76,17 +117,18 @@ cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpo
 
     Json::Value root;
     Json::Reader reader;
+    spdlog::debug("Auth issuer response: {}", str_buffer);
     if (const bool parse_status = reader.parse(str_buffer, root); !parse_status) {
         throw std::runtime_error("failed to parse auth_issuer information");
     }
     AuthIssuerResponse response;
     response.issuer = root["issuer"].asString();
+    this->auth_issuer = response;
     co_return response;
 }
 
 cppcoro::task<ClientRegistrationResponse> Client::register_client(std::string registration_endpoint,
-                                                                  const ClientRegistrationData &registration_data)
-const {
+                                                                  const ClientRegistrationData &registration_data) {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
@@ -129,6 +171,7 @@ const {
     // Convert the JSON to a string
     Json::StreamWriterBuilder writer;
     const std::string json_str = Json::writeString(writer, root);
+    spdlog::debug("Registration request: {}", json_str);
 
     // Set the POST data
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str.c_str());
@@ -142,17 +185,20 @@ const {
     //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
     if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to find registration information: " + std::string(curl_easy_strerror(res)));
+        throw std::runtime_error(
+            "failed to find registration information: " + std::string(curl_easy_strerror(res)));
     }
 
     Json::Value resp_root;
     Json::Reader reader;
+    spdlog::debug("Registration response: {}", str_buffer);
     if (const bool parse_status = reader.parse(str_buffer, resp_root); !parse_status) {
         throw std::runtime_error("failed to parse registration information");
     }
     ClientRegistrationResponse response;
     response.client_id = resp_root["client_id"].asString();
     response.client_id_issued_at = resp_root["client_id_issued_at"].asInt();
+    this->client_registration = response;
     co_return response;
 }
 
@@ -200,7 +246,8 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_e
     //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
     if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to find exchange token information: " + std::string(curl_easy_strerror(res)));
+        throw std::runtime_error(
+            "failed to find exchange token information: " + std::string(curl_easy_strerror(res)));
     }
 
     Json::Value resp_root;
@@ -219,18 +266,22 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_e
     co_return response;
 }
 
-cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::string auth_endpoint) const {
+cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::string auth_endpoint) {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
+    spdlog::info("Fetching openid configuration from auth_endpoint: {}", auth_endpoint);
 
-    if (auth_endpoint.find("https://") == std::string::npos || auth_endpoint.find("_matrix/client") != std::string::npos
-        ||
-        auth_endpoint.back() == '/') {
+    if (auth_endpoint.find("https://") == std::string::npos || auth_endpoint.find("_matrix/client") !=
+        std::string::npos) {
         throw std::runtime_error("invalid auth_endpoint");
     }
 
-    const auto endpoint = auth_endpoint + "/.well-known/openid-configuration";
+    auto endpoint = auth_endpoint + "/.well-known/openid-configuration";
+
+    // Remove double slashes and make them single
+    std::regex re("([^:])(//+)");
+    endpoint = std::regex_replace(endpoint, re, "$1/");
 
     std::string str_buffer;
     curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
@@ -277,7 +328,8 @@ cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::strin
         response.token_endpoint_auth_methods_supported.push_back(token_endpoint_auth_method.asString());
     }
     for (const auto &token_endpoint_auth_signing_alg: root["token_endpoint_auth_signing_alg_values_supported"]) {
-        response.token_endpoint_auth_signing_alg_values_supported.push_back(token_endpoint_auth_signing_alg.asString());
+        response.token_endpoint_auth_signing_alg_values_supported.push_back(
+            token_endpoint_auth_signing_alg.asString());
     }
     response.revocation_endpoint = root["revocation_endpoint"].asString();
     for (const auto &revocation_endpoint_auth_method: root["revocation_endpoint_auth_methods_supported"]) {
@@ -290,7 +342,8 @@ cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::strin
     }
     response.introspection_endpoint = root["introspection_endpoint"].asString();
     for (const auto &introspection_endpoint_auth_method: root["introspection_endpoint_auth_methods_supported"]) {
-        response.introspection_endpoint_auth_methods_supported.push_back(introspection_endpoint_auth_method.asString());
+        response.introspection_endpoint_auth_methods_supported.push_back(
+            introspection_endpoint_auth_method.asString());
     }
     for (const auto &introspection_endpoint_auth_signing_alg: root[
              "introspection_endpoint_auth_signing_alg_values_supported"]) {
@@ -332,6 +385,8 @@ cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::strin
     for (const auto &account_management_action: root["account_management_actions_supported"]) {
         response.account_management_actions_supported.push_back(account_management_action.asString());
     }
+
+    this->openid_configuration = response;
 
     co_return response;
 }
