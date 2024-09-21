@@ -67,6 +67,7 @@ struct ClientRegistrationData {
     std::vector<std::string> redirect_uris;
     std::vector<std::string> response_types;
     std::vector<std::string> grant_types;
+    std::vector<std::string> contacts;
 };
 
 struct ClientRegistrationResponse {

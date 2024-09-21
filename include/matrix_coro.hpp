@@ -47,7 +47,7 @@ private:
      * \param cs_endpoint The URL of the client-server endpoint from which to fetch the authentication issuer information.
      * \return A cppcoro::task that resolves to an AuthIssuerResponse containing the authentication issuer information.
      */
-    [[nodiscard]] cppcoro::task<AuthIssuerResponse> fetch_auth_issuer(const std::string &cs_endpoint) const;
+    [[nodiscard]] cppcoro::task<AuthIssuerResponse> fetch_auth_issuer(std::string cs_endpoint) const;
 
     /**
      * \brief Registers a client with the specified authentication endpoint (MSC2966).
@@ -59,7 +59,7 @@ private:
      * \param registration_data The data required for client registration.
      * \return A cppcoro::task that resolves to a ClientRegistrationResponse containing the registration result.
      */
-    [[nodiscard]] cppcoro::task<ClientRegistrationResponse> register_client(const std::string &registration_endpoint,
+    [[nodiscard]] cppcoro::task<ClientRegistrationResponse> register_client(std::string registration_endpoint,
                                                                             const ClientRegistrationData &
                                                                             registration_data) const;
 
@@ -85,10 +85,12 @@ private:
     }
 
     [[nodiscard]] cppcoro::task<TokenResponse> exchange_code_for_token(
-        const std::string &token_endpoint, const std::string &code,
+        std::string token_endpoint,
+        const std::string &code,
         const std::string &code_verifier,
-        const std::string &client_id, const std::string &redirect_url) const;
+        const std::string &client_id,
+        const std::string &redirect_url) const;
 
-    [[nodiscard]] cppcoro::task<OpenIDConfiguration> fetch_openid_configration(
-        const std::string &auth_endpoint) const;
+    [[nodiscard]] cppcoro::task<OpenIDConfiguration> fetch_openid_configuration(
+        std::string auth_endpoint) const;
 };

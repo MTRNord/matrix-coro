@@ -46,7 +46,7 @@ cppcoro::task<WellKnownResponse> Client::fetch_wellknown(const std::string &home
     co_return response;
 }
 
-cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(const std::string &cs_endpoint) const {
+cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(std::string cs_endpoint) const {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
@@ -84,7 +84,7 @@ cppcoro::task<AuthIssuerResponse> Client::fetch_auth_issuer(const std::string &c
     co_return response;
 }
 
-cppcoro::task<ClientRegistrationResponse> Client::register_client(const std::string &registration_endpoint,
+cppcoro::task<ClientRegistrationResponse> Client::register_client(std::string registration_endpoint,
                                                                   const ClientRegistrationData &registration_data)
 const {
     if (!curl) {
@@ -121,6 +121,10 @@ const {
     }
     root["token_endpoint_auth_method"] = registration_data.token_endpoint_auth_method;
     root["client_uri"] = registration_data.client_uri;
+    root["contacts"] = Json::arrayValue;
+    for (const auto &contact: registration_data.contacts) {
+        root["contacts"].append(contact);
+    }
 
     // Convert the JSON to a string
     Json::StreamWriterBuilder writer;
@@ -130,7 +134,7 @@ const {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str.c_str());
 
     // Set the Content-Type header
-    struct curl_slist *headers = nullptr;
+    curl_slist *headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
@@ -138,13 +142,13 @@ const {
     //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
     if (const CURLcode res = curl_easy_perform(curl); res != CURLE_OK) {
-        throw std::runtime_error("failed to find auth_issuer information: " + std::string(curl_easy_strerror(res)));
+        throw std::runtime_error("failed to find registration information: " + std::string(curl_easy_strerror(res)));
     }
 
     Json::Value resp_root;
     Json::Reader reader;
     if (const bool parse_status = reader.parse(str_buffer, resp_root); !parse_status) {
-        throw std::runtime_error("failed to parse auth_issuer information");
+        throw std::runtime_error("failed to parse registration information");
     }
     ClientRegistrationResponse response;
     response.client_id = resp_root["client_id"].asString();
@@ -152,7 +156,7 @@ const {
     co_return response;
 }
 
-cppcoro::task<TokenResponse> Client::exchange_code_for_token(const std::string &token_endpoint,
+cppcoro::task<TokenResponse> Client::exchange_code_for_token(std::string token_endpoint,
                                                              const std::string &code,
                                                              const std::string &code_verifier,
                                                              const std::string &client_id,
@@ -215,7 +219,7 @@ cppcoro::task<TokenResponse> Client::exchange_code_for_token(const std::string &
     co_return response;
 }
 
-cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configration(const std::string &auth_endpoint) const {
+cppcoro::task<OpenIDConfiguration> Client::fetch_openid_configuration(std::string auth_endpoint) const {
     if (!curl) {
         throw std::runtime_error("http client is not initialized");
     }
