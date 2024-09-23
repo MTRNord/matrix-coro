@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.29)
+cmake_minimum_required(VERSION 3.28.1)
 project(matrix_coro)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -14,6 +14,7 @@ FetchContent_Declare(
         GIT_TAG a4ef65281814b18fdd1ac5457d3e219347ec6cb8
         GIT_SHALLOW ON
         GIT_PROGRESS ON
+        SYSTEM
 )
 
 FetchContent_MakeAvailable(cppcoro)
@@ -36,6 +37,7 @@ FetchContent_Declare(
         GIT_TAG 52ed741c82c518f7c038c50d5f39bf943067d9a8
         GIT_SHALLOW ON
         GIT_PROGRESS ON
+        SYSTEM
 )
 
 FetchContent_MakeAvailable(cthash)
@@ -54,15 +56,16 @@ target_include_directories(matrix_coro
 )
 
 if (CMAKE_BUILD_TYPE MATCHES "Debug")
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
     set(CMAKE_CXX_CLANG_TIDY "clang-tidy")
 
-    #set(
-    #        CMAKE_CXX_FLAGS
-    #        "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fsanitize=address"
-    #)
-    #target_link_options(matrix_coro
-    #        BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
-    #)
+    set(
+            CMAKE_CXX_FLAGS
+            "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fsanitize=address"
+    )
+    target_link_options(matrix_coro
+            BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
+    )
 endif ()
 
 # Examples
