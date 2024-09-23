@@ -57,7 +57,7 @@ jobs:
       # Install dependencies if linux
       - name: Install dependencies
         if: startsWith(matrix.os, 'ubuntu')
-        run: sudo apt-get -y install cmake libcurl4-gnutls-dev libspdlog-dev libjsoncpp-dev
+        run: sudo apt-get -y install cmake libcurl4-openssl-dev libspdlog-dev libjsoncpp-dev
 
       # Setup vcpkg if windows
       - name: Setup vcpkg
